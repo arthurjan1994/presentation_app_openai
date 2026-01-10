@@ -455,33 +455,153 @@ Use list_slides first to understand the current state before making any changes.
 # MESSAGE SERIALIZATION
 # =============================================================================
 
-def _get_friendly_tool_description(tool_name: str, tool_input: dict) -> str:
-    """Convert a tool call into a user-friendly description."""
-    if not isinstance(tool_input, dict):
+def _extract_slide_title_from_html(html: str) -> str:
+    """Extract the title/heading from slide HTML content."""
+    import re
+    if not html:
         return None
+
+    # Try to find h1, h2, or first significant text
+    # Pattern for h1 or h2 tags
+    heading_match = re.search(r'<h[12][^>]*>([^<]+)</h[12]>', html, re.IGNORECASE)
+    if heading_match:
+        title = heading_match.group(1).strip()
+        # Clean up any extra whitespace
+        title = ' '.join(title.split())
+        if len(title) > 60:
+            title = title[:57] + "..."
+        return title
+
+    # Fallback: try to get first meaningful text content
+    # Remove all HTML tags and get first line
+    text = re.sub(r'<[^>]+>', ' ', html)
+    text = ' '.join(text.split()).strip()
+    if text:
+        # Get first sentence or first 60 chars
+        first_part = text[:60]
+        if len(text) > 60:
+            first_part = first_part.rsplit(' ', 1)[0] + "..."
+        return first_part
+
+    return None
+
+
+def _extract_slide_content_from_html(html: str) -> str:
+    """Extract full readable text content from slide HTML for display."""
+    import re
+    if not html:
+        return None
+
+    # Extract list items (handle nested content too)
+    list_items = re.findall(r'<li[^>]*>(.*?)</li>', html, re.IGNORECASE | re.DOTALL)
+
+    # Extract paragraphs
+    paragraphs = re.findall(r'<p[^>]*>(.*?)</p>', html, re.IGNORECASE | re.DOTALL)
+
+    # Extract div content that might contain text (for structured content)
+    divs_with_text = re.findall(r'<div[^>]*>([^<]+)</div>', html, re.IGNORECASE)
+
+    # Build content string
+    content_parts = []
+
+    # Add bullet points - clean up any nested HTML
+    for item in list_items:
+        # Remove any nested HTML tags
+        item = re.sub(r'<[^>]+>', ' ', item)
+        item = ' '.join(item.split()).strip()
+        if item:
+            content_parts.append(f"• {item}")
+
+    # Add paragraphs if no list items (or in addition)
+    if not content_parts:
+        for para in paragraphs:
+            # Remove any nested HTML tags
+            para = re.sub(r'<[^>]+>', ' ', para)
+            para = ' '.join(para.split()).strip()
+            if para:
+                content_parts.append(para)
+
+    # If still nothing, try to extract structured text intelligently
+    if not content_parts:
+        # First, try to find strong/b tags as headers with following text
+        # Pattern: <strong>Title:</strong> description
+        structured = re.findall(r'<(?:strong|b)[^>]*>([^<]+)</(?:strong|b)>\s*:?\s*([^<]*)', html, re.IGNORECASE)
+        if structured:
+            for title, desc in structured:
+                title = title.strip().rstrip(':')
+                desc = desc.strip()
+                if title and desc:
+                    content_parts.append(f"• {title}: {desc}")
+                elif title:
+                    content_parts.append(f"• {title}")
+
+    # Last resort: extract all text and try to format it
+    if not content_parts:
+        # Remove script and style tags first
+        text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        # Remove h1/h2 (title) to avoid duplication
+        text = re.sub(r'<h[12][^>]*>.*?</h[12]>', '', text, flags=re.DOTALL | re.IGNORECASE)
+        # Replace block elements with newlines
+        text = re.sub(r'</(?:div|p|li|br)[^>]*>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
+        # Remove remaining HTML tags
+        text = re.sub(r'<[^>]+>', ' ', text)
+        # Clean up whitespace but preserve newlines
+        lines = [' '.join(line.split()).strip() for line in text.split('\n')]
+        lines = [line for line in lines if line]
+        if lines:
+            content_parts = lines
+
+    if content_parts:
+        result = '\n'.join(content_parts)
+        # Limit length but keep it readable
+        if len(result) > 500:
+            result = result[:497] + "..."
+        return result
+
+    return None
+
+
+def _get_friendly_tool_description(tool_name: str, tool_input: dict) -> tuple[str, str]:
+    """Convert a tool call into a user-friendly description and details.
+
+    Returns:
+        Tuple of (friendly_description, details_content)
+    """
+    if not isinstance(tool_input, dict):
+        return None, None
 
     if "create_presentation" in tool_name:
         title = tool_input.get("title", "Untitled")
-        return f"Creating presentation: {title}"
+        return f"Creating presentation: {title}", None
     elif "add_slide" in tool_name:
-        return "Adding a new slide..."
+        html = tool_input.get("html", "")
+        slide_title = _extract_slide_title_from_html(html)
+        slide_content = _extract_slide_content_from_html(html)
+        friendly = f"Adding slide: {slide_title}" if slide_title else "Adding a new slide..."
+        return friendly, slide_content
     elif "update_slide" in tool_name:
         idx = tool_input.get("slide_index", 0)
-        return f"Updating slide {idx + 1}..."
+        html = tool_input.get("html", "")
+        slide_title = _extract_slide_title_from_html(html)
+        slide_content = _extract_slide_content_from_html(html)
+        friendly = f"Updating slide {idx + 1}: {slide_title}" if slide_title else f"Updating slide {idx + 1}..."
+        return friendly, slide_content
     elif "delete_slide" in tool_name:
         idx = tool_input.get("slide_index", 0)
-        return f"Deleting slide {idx + 1}..."
+        return f"Deleting slide {idx + 1}", None
     elif "list_slides" in tool_name:
-        return "Listing all slides..."
+        return "Listing all slides...", None
     elif "get_slide" in tool_name:
         idx = tool_input.get("slide_index", 0)
-        return f"Getting slide {idx + 1} details..."
+        return f"Getting slide {idx + 1} details...", None
     elif "commit_edits" in tool_name:
-        return "Saving changes..."
+        return "Saving changes...", None
     elif "set_theme" in tool_name:
-        return "Setting presentation theme..."
+        return "Setting presentation theme...", None
 
-    return None
+    return None, None
 
 
 def _serialize_message(message) -> dict:
@@ -499,12 +619,13 @@ def _serialize_message(message) -> dict:
             elif ToolUseBlock and isinstance(block, ToolUseBlock):
                 tool_name = getattr(block, "name", "unknown")
                 tool_input = getattr(block, "input", {})
-                friendly_desc = _get_friendly_tool_description(tool_name, tool_input)
+                friendly_desc, details = _get_friendly_tool_description(tool_name, tool_input)
 
                 tool_calls.append({
                     "name": tool_name,
                     "input": tool_input if isinstance(tool_input, dict) else str(tool_input)[:200],
-                    "friendly": friendly_desc
+                    "friendly": friendly_desc,
+                    "details": details,
                 })
 
         if texts:
@@ -515,6 +636,10 @@ def _serialize_message(message) -> dict:
             friendly_msgs = [tc["friendly"] for tc in tool_calls if tc.get("friendly")]
             if friendly_msgs:
                 msg_dict["friendly"] = friendly_msgs
+            # Include details for slide content
+            details_msgs = [tc["details"] for tc in tool_calls if tc.get("details")]
+            if details_msgs:
+                msg_dict["details"] = details_msgs
 
     elif UserMessage and isinstance(message, UserMessage):
         msg_dict["type"] = "user"
@@ -566,6 +691,17 @@ def _create_agent_options(
         if context_text:
             system_prompt += f"\n\nCONTEXT FILES:\n{context_text}"
 
+    # Add style template to prompt if available
+    if session.style_template and session.style_template.get("text"):
+        system_prompt += f"\n\nSTYLE TEMPLATE REFERENCE:"
+        system_prompt += f"\nFilename: {session.style_template['filename']}"
+        system_prompt += f"\nTemplate content:\n{session.style_template['text']}"
+
+        screenshot_count = len(session.style_template.get("screenshots", []))
+        if screenshot_count > 0:
+            system_prompt += f"\n\nStyle reference screenshots will be provided as images in the user message. "
+            system_prompt += "Carefully analyze these screenshots and replicate the visual style (colors, fonts, layout patterns, design elements) in the slides you create."
+
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
         mcp_servers={"presentation": pres_server},
@@ -583,6 +719,79 @@ def _create_agent_options(
         ],
         resume=resume_session_id,
     )
+
+
+# =============================================================================
+# MULTIMODAL PROMPT BUILDER
+# =============================================================================
+
+def _build_multimodal_content(
+    session: PresentationSession,
+    instructions: str
+) -> list[dict]:
+    """
+    Build multimodal content blocks with template screenshots if available.
+
+    Returns a list of content blocks in Anthropic's vision API format.
+    """
+    content_blocks = []
+
+    # Add template screenshots as vision context
+    if session.style_template and session.style_template.get("screenshots"):
+        screenshots = session.style_template["screenshots"]
+
+        content_blocks.append({
+            "type": "text",
+            "text": f"STYLE TEMPLATE REFERENCE SCREENSHOTS:\nThe following {len(screenshots)} screenshots show the visual style you should emulate when creating slides:"
+        })
+
+        for i, screenshot in enumerate(screenshots):
+            content_blocks.append({
+                "type": "text",
+                "text": f"\nSlide {screenshot.get('index', i) + 1}:"
+            })
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": screenshot["data"],
+                }
+            })
+
+        content_blocks.append({
+            "type": "text",
+            "text": "\nIMPORTANT: Match this template's visual style - colors, fonts, layout patterns, and design elements.\n\n---\n\nUSER REQUEST:"
+        })
+
+    # Add user instructions
+    content_blocks.append({"type": "text", "text": instructions})
+
+    return content_blocks
+
+
+async def _build_multimodal_prompt(
+    session: PresentationSession,
+    instructions: str
+) -> AsyncGenerator[dict, None]:
+    """
+    Build multimodal prompt as a user message with content blocks.
+
+    Matches the SDK's internal format from ClaudeSDKClient.query():
+    https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/client.py
+    """
+    content_blocks = _build_multimodal_content(session, instructions)
+
+    # SDK format: type + message wrapper + Anthropic API content
+    yield {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": content_blocks
+        },
+        "parent_tool_use_id": None,
+        # session_id will be added by query() if not present
+    }
 
 
 # =============================================================================
@@ -638,7 +847,8 @@ async def run_agent_stream(
             print(f"[Agent Stream] Connected, sending query...")
             yield {"type": "status", "message": "Agent connected, processing..."}
 
-            await client.query(instructions)
+            # Use multimodal prompt if style template has screenshots
+            await client.query(_build_multimodal_prompt(session, instructions))
 
             async for message in client.receive_response():
                 message_count += 1

@@ -97,6 +97,7 @@ async def agent_stream(
     is_continuation: bool = Form(False),
     resume_session_id: Optional[str] = Form(None),
     user_session_id: Optional[str] = Form(None),
+    context_files: Optional[str] = Form(None),
 ):
     """
     Main streaming endpoint for agent interactions.
@@ -111,6 +112,14 @@ async def agent_stream(
     """
     from agent import run_agent_stream
 
+    # Parse context files JSON if provided
+    parsed_context_files = None
+    if context_files:
+        try:
+            parsed_context_files = json.loads(context_files)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse context_files JSON")
+
     async def event_stream():
         try:
             async for message in run_agent_stream(
@@ -118,6 +127,7 @@ async def agent_stream(
                 is_continuation=is_continuation,
                 resume_session_id=resume_session_id,
                 user_session_id=user_session_id,
+                context_files=parsed_context_files,
             ):
                 yield f"data: {json.dumps(message, default=str)}\n\n"
         except Exception as e:
@@ -355,6 +365,30 @@ async def parse_files_endpoint(
             "Connection": "keep-alive",
         }
     )
+
+
+@app.post("/parse-template")
+async def parse_template_endpoint(
+    file: UploadFile = File(...),
+    user_session_id: str = Form(...),
+):
+    """
+    Parse a presentation template file with screenshot extraction.
+    Returns text content and representative screenshots for style reference.
+    """
+    from parser import parse_template_with_screenshots
+    from session import session_manager
+
+    content = await file.read()
+    result = await parse_template_with_screenshots(content, file.filename)
+
+    # Store in session if successful
+    if result.get("success"):
+        session = session_manager.get_or_create_session(user_session_id)
+        session.style_template = result
+        session_manager.save_session(session)
+
+    return result
 
 
 if __name__ == "__main__":

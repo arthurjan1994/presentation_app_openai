@@ -7,11 +7,15 @@ import type { ParseResult } from "@/types";
 interface ContextFilesUploadProps {
   userSessionId: string;
   onFilesProcessed: (results: ParseResult[]) => void;
+  parseMode?: "cost_effective" | "premium";
+  onParseModeChange?: (mode: "cost_effective" | "premium") => void;
 }
 
 export function ContextFilesUpload({
   userSessionId,
   onFilesProcessed,
+  parseMode = "cost_effective",
+  onParseModeChange,
 }: ContextFilesUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -32,7 +36,7 @@ export function ContextFilesUpload({
     try {
       const results: ParseResult[] = [];
 
-      for await (const event of streamParseFiles(fileArray, userSessionId)) {
+      for await (const event of streamParseFiles(fileArray, userSessionId, parseMode)) {
         if (event.type === "progress") {
           setProgress({
             current: event.current || 0,
@@ -81,43 +85,66 @@ export function ContextFilesUpload({
   };
 
   return (
-    <div
-      className={`p-4 border-2 border-dashed rounded-lg text-center cursor-pointer transition-colors ${
-        isDragging
-          ? "border-blue-500 bg-blue-50"
-          : "border-gray-300 hover:border-gray-400"
-      }`}
-      onDrop={handleDrop}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onClick={handleClick}
-    >
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        onChange={handleInputChange}
-        className="hidden"
-        accept=".pdf,.doc,.docx,.txt,.md"
-      />
-
-      {isProcessing ? (
-        <div className="text-sm text-gray-600">
-          <div className="animate-pulse mb-2">Processing files...</div>
-          {progress && (
-            <div>
-              {progress.filename} ({progress.current}/{progress.total})
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="text-sm text-gray-600">
-          <div className="mb-1">Drop files here or click to upload</div>
-          <div className="text-xs text-gray-400">
-            PDF, DOC, DOCX, TXT, MD supported
-          </div>
+    <div className="space-y-3">
+      {/* Parse mode toggle */}
+      {onParseModeChange && (
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-gray-600">Parse mode:</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onParseModeChange(parseMode === "cost_effective" ? "premium" : "cost_effective");
+            }}
+            className={`px-3 py-1 text-xs rounded-full transition-colors ${
+              parseMode === "premium"
+                ? "bg-blue-600 text-white"
+                : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+            }`}
+          >
+            {parseMode === "premium" ? "Premium" : "Cost Effective"}
+          </button>
         </div>
       )}
+
+      {/* Drop zone */}
+      <div
+        className={`p-4 border-2 border-dashed rounded-lg text-center cursor-pointer transition-colors ${
+          isDragging
+            ? "border-blue-500 bg-blue-50"
+            : "border-gray-300 hover:border-gray-400"
+        }`}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onClick={handleClick}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          onChange={handleInputChange}
+          className="hidden"
+          accept=".pdf,.doc,.docx,.pptx,.ppt,.txt,.md,.png,.jpg,.jpeg"
+        />
+
+        {isProcessing ? (
+          <div className="text-sm text-gray-600">
+            <div className="animate-pulse mb-2">Processing files...</div>
+            {progress && (
+              <div>
+                {progress.filename} ({progress.current}/{progress.total})
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-sm text-gray-600">
+            <div className="mb-1">Drop files here or click to upload</div>
+            <div className="text-xs text-gray-400">
+              PDF, DOCX, PPTX, TXT, MD, images supported
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

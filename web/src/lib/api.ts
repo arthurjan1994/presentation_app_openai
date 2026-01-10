@@ -14,6 +14,7 @@ export async function* streamAgent(options: {
   isContinuation: boolean;
   resumeSessionId?: string;
   userSessionId?: string;
+  contextFiles?: Array<{ filename: string; text: string; success: boolean }>;
 }): AsyncGenerator<StreamEvent> {
   const formData = new FormData();
   formData.append("instructions", options.instructions);
@@ -24,6 +25,9 @@ export async function* streamAgent(options: {
   }
   if (options.userSessionId) {
     formData.append("user_session_id", options.userSessionId);
+  }
+  if (options.contextFiles && options.contextFiles.length > 0) {
+    formData.append("context_files", JSON.stringify(options.contextFiles));
   }
 
   const response = await fetch(`${API_BASE}/agent-stream`, {

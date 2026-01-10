@@ -46,8 +46,8 @@ export function ChatMessage({ message }: ChatMessageProps) {
               </div>
             )}
 
-            {/* Content section - only show if there's content */}
-            {hasContent && (
+            {/* Content section - only show when NOT streaming and has content */}
+            {hasContent && message.status !== "streaming" && (
               <div className="p-3 pt-2">
                 <div className="whitespace-pre-wrap break-words text-gray-900">
                   {message.content}

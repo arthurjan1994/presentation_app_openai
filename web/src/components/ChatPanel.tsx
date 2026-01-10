@@ -1,9 +1,98 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import type { ChatMessage as ChatMessageType, AgentLogEntry } from "@/types";
+import type { ChatMessage as ChatMessageType, AgentLogEntry, StreamEvent } from "@/types";
 import { ChatMessage } from "./ChatMessage";
 import { streamAgent } from "@/lib/api";
+
+// Helper to generate unique IDs
+const generateId = () => Math.random().toString(36).substring(2, 11);
+
+// Format tool name to be more readable
+function formatToolName(name: string): string {
+  return name
+    .replace(/^mcp__presentation__/, "") // Remove MCP prefix
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Create a log entry from a stream event
+function createLogEntry(event: StreamEvent): AgentLogEntry | null {
+  const id = generateId();
+  const timestamp = new Date();
+
+  switch (event.type) {
+    case "init":
+      return {
+        id,
+        type: "init",
+        timestamp,
+        content: event.message || "Initializing agent...",
+        message: event.message,
+      };
+
+    case "status":
+      return {
+        id,
+        type: "status",
+        timestamp,
+        content: event.message || "Processing...",
+        message: event.message,
+      };
+
+    case "tool_use": {
+      // Use friendly descriptions if available from backend
+      const friendlyMessages = event.friendly;
+      const detailsMessages = event.details;
+
+      if (friendlyMessages && friendlyMessages.length > 0) {
+        return {
+          id,
+          type: "tool_use",
+          timestamp,
+          content:
+            friendlyMessages.length > 1
+              ? `Updating ${friendlyMessages.length} elements`
+              : friendlyMessages[0],
+          // Use details from backend (slide content) if available
+          details: detailsMessages?.[0] || undefined,
+          toolName: event.tool_calls?.[0]?.name,
+          toolInput: event.tool_calls?.[0]?.input,
+        };
+      }
+      // Fallback to formatted tool name
+      const toolName = event.tool_calls?.[0]?.name || "tool";
+      return {
+        id,
+        type: "tool_use",
+        timestamp,
+        content: formatToolName(toolName),
+        details: detailsMessages?.[0] || undefined,
+        toolName,
+        toolInput: event.tool_calls?.[0]?.input,
+      };
+    }
+
+    case "complete":
+      return {
+        id,
+        type: "status",
+        timestamp,
+        content: `Completed - ${event.slide_count} slides`,
+      };
+
+    case "error":
+      return {
+        id,
+        type: "status",
+        timestamp,
+        content: event.error || "An error occurred",
+      };
+
+    default:
+      return null;
+  }
+}
 
 interface ChatPanelProps {
   messages: ChatMessageType[];
@@ -13,6 +102,7 @@ interface ChatPanelProps {
   onSessionUpdate: (userSessionId: string, agentSessionId: string) => void;
   onSlidesUpdate: () => void;
   isFirstMessage: boolean;
+  contextFiles?: Array<{ filename: string; text: string; success: boolean }>;
 }
 
 export function ChatPanel({
@@ -23,6 +113,7 @@ export function ChatPanel({
   onSessionUpdate,
   onSlidesUpdate,
   isFirstMessage,
+  contextFiles,
 }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -60,52 +151,37 @@ export function ChatPanel({
     setIsLoading(true);
 
     try {
-      let currentContent = "";
       const currentLog: AgentLogEntry[] = [];
       let newUserSessionId = userSessionId;
       let newAgentSessionId = agentSessionId;
+      let slideCount = 0;
 
       for await (const event of streamAgent({
         instructions: userMessage.content,
         isContinuation: !isFirstMessage,
         resumeSessionId: agentSessionId || undefined,
         userSessionId: userSessionId || undefined,
+        contextFiles: contextFiles,
       })) {
-        // Process event based on type
-        if (event.type === "init") {
-          currentLog.push({
-            type: "init",
-            timestamp: new Date(),
-            message: event.message,
-          });
-        } else if (event.type === "status") {
-          currentLog.push({
-            type: "status",
-            timestamp: new Date(),
-            message: event.message,
-          });
-        } else if (event.type === "tool_use") {
-          for (const toolCall of event.tool_calls) {
-            currentLog.push({
-              type: "tool_use",
-              timestamp: new Date(),
-              toolName: toolCall.name,
-              toolInput: toolCall.input,
-            });
-          }
-        } else if (event.type === "assistant") {
-          currentContent += event.text;
-        } else if (event.type === "complete") {
+        // Create log entry from event (don't accumulate assistant text)
+        const logEntry = createLogEntry(event);
+        if (logEntry) {
+          currentLog.push(logEntry);
+        }
+
+        // Track session IDs and slide count from complete event
+        if (event.type === "complete") {
           newUserSessionId = event.user_session_id;
           newAgentSessionId = event.session_id;
+          slideCount = event.slide_count;
         } else if (event.type === "error") {
           throw new Error(event.error);
         }
 
-        // Update the assistant message in real-time
+        // Update the assistant message in real-time (log only, not content)
         const updatedAssistantMessage: ChatMessageType = {
           ...assistantMessage,
-          content: currentContent,
+          content: "", // Keep empty during streaming
           agentLog: [...currentLog],
         };
 
@@ -117,9 +193,14 @@ export function ChatPanel({
       }
 
       // Final update with complete status
+      const finalContent =
+        slideCount > 0
+          ? `Done! Created ${slideCount} slides.`
+          : "Done! Your presentation has been updated.";
+
       const finalAssistantMessage: ChatMessageType = {
         ...assistantMessage,
-        content: currentContent || "Done! Your presentation has been updated.",
+        content: finalContent,
         status: "complete",
         agentLog: currentLog,
       };

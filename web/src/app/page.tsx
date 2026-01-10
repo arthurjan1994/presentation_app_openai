@@ -1,11 +1,14 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import type { ChatMessage, Presentation, Slide } from "@/types";
+import type { ChatMessage, Presentation, Slide, ParseResult, TemplateResult } from "@/types";
 import { ChatPanel } from "@/components/ChatPanel";
 import { SlideViewer } from "@/components/SlideViewer";
 import { SlideGrid } from "@/components/SlideGrid";
 import { ExportMenu } from "@/components/ExportMenu";
+import { ContextFilesUpload } from "@/components/ContextFilesUpload";
+import { TemplateUpload } from "@/components/TemplateUpload";
+import { TemplatePreview } from "@/components/TemplatePreview";
 import { getSessionSlides } from "@/lib/api";
 import {
   generateSessionId,
@@ -27,6 +30,13 @@ export default function Home() {
 
   // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+
+  // Context files state
+  const [contextFiles, setContextFiles] = useState<ParseResult[]>([]);
+  const [parseMode, setParseMode] = useState<"cost_effective" | "premium">("cost_effective");
+
+  // Style template state
+  const [styleTemplate, setStyleTemplate] = useState<TemplateResult | null>(null);
 
   // UI state
   const [isLoading, setIsLoading] = useState(true);
@@ -132,6 +142,26 @@ export default function Home() {
     setSlides([]);
     setPresentation(null);
     setCurrentSlideIndex(0);
+    setContextFiles([]);
+    setStyleTemplate(null);
+  }, []);
+
+  // Handle context files
+  const handleFilesProcessed = useCallback((results: ParseResult[]) => {
+    setContextFiles((prev) => [...prev, ...results]);
+  }, []);
+
+  const handleRemoveContextFile = useCallback((filename: string) => {
+    setContextFiles((prev) => prev.filter((f) => f.filename !== filename));
+  }, []);
+
+  // Handle style template
+  const handleTemplateProcessed = useCallback((result: TemplateResult) => {
+    setStyleTemplate(result);
+  }, []);
+
+  const handleRemoveTemplate = useCallback(() => {
+    setStyleTemplate(null);
   }, []);
 
   if (isLoading) {
@@ -186,16 +216,83 @@ export default function Home() {
         </div>
 
         {/* Right panel - Chat */}
-        <div className="w-1/2 bg-white">
-          <ChatPanel
-            messages={messages}
-            onMessagesUpdate={setMessages}
-            userSessionId={userSessionId}
-            agentSessionId={agentSessionId}
-            onSessionUpdate={handleSessionUpdate}
-            onSlidesUpdate={handleSlidesUpdate}
-            isFirstMessage={messages.length === 0}
-          />
+        <div className="w-1/2 bg-white flex flex-col">
+          {/* Context Files Section */}
+          <div className="border-b p-4">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-medium text-gray-700">Context Files</h3>
+              {contextFiles.length > 0 && (
+                <span className="text-xs text-gray-500">
+                  {contextFiles.length} file{contextFiles.length !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+
+            {/* Uploaded files list */}
+            {contextFiles.length > 0 && (
+              <div className="mb-3 space-y-1">
+                {contextFiles.map((file, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center justify-between text-sm bg-gray-50 rounded px-2 py-1"
+                  >
+                    <span className="truncate text-gray-600 flex-1 mr-2">
+                      {file.filename}
+                    </span>
+                    <button
+                      onClick={() => handleRemoveContextFile(file.filename)}
+                      className="text-gray-400 hover:text-red-500 p-1 flex-shrink-0"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Upload component */}
+            {userSessionId && (
+              <ContextFilesUpload
+                userSessionId={userSessionId}
+                onFilesProcessed={handleFilesProcessed}
+                parseMode={parseMode}
+                onParseModeChange={setParseMode}
+              />
+            )}
+
+            {/* Style Template Section */}
+            <div className="mt-4 pt-4 border-t">
+              {styleTemplate ? (
+                <TemplatePreview
+                  template={styleTemplate}
+                  onRemove={handleRemoveTemplate}
+                />
+              ) : (
+                userSessionId && (
+                  <TemplateUpload
+                    userSessionId={userSessionId}
+                    onTemplateProcessed={handleTemplateProcessed}
+                  />
+                )
+              )}
+            </div>
+          </div>
+
+          {/* Chat Panel */}
+          <div className="flex-1 overflow-hidden">
+            <ChatPanel
+              messages={messages}
+              onMessagesUpdate={setMessages}
+              userSessionId={userSessionId}
+              agentSessionId={agentSessionId}
+              onSessionUpdate={handleSessionUpdate}
+              onSlidesUpdate={handleSlidesUpdate}
+              isFirstMessage={messages.length === 0}
+              contextFiles={contextFiles}
+            />
+          </div>
         </div>
       </main>
     </div>

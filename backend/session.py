@@ -36,6 +36,7 @@ class PresentationSession:
         self.pending_edits: list[PendingEdit] = []
         self.applied_edits: list[dict] = []
         self.context_files: list[dict] = []
+        self.style_template: Optional[dict] = None  # {filename, text, screenshots}
         self.is_continuation: bool = False
         self.claude_session_id: Optional[str] = None
         self.created_at: datetime = datetime.now()
@@ -47,6 +48,7 @@ class PresentationSession:
         self.pending_edits = []
         self.applied_edits = []
         self.context_files = []
+        self.style_template = None
         self.is_continuation = False
         self.updated_at = datetime.now()
 
@@ -63,6 +65,7 @@ class PresentationSession:
             "pending_edits": [e.to_dict() for e in self.pending_edits],
             "applied_edits": self.applied_edits,
             "context_files": self.context_files,
+            "style_template": self.style_template,
             "is_continuation": self.is_continuation,
             "claude_session_id": self.claude_session_id,
             "created_at": self.created_at.isoformat(),
@@ -80,6 +83,7 @@ class PresentationSession:
         ]
         session.applied_edits = data.get("applied_edits", [])
         session.context_files = data.get("context_files", [])
+        session.style_template = data.get("style_template")
         session.is_continuation = data.get("is_continuation", False)
         session.claude_session_id = data.get("claude_session_id")
         session.created_at = datetime.fromisoformat(data["created_at"])

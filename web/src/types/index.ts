@@ -16,8 +16,11 @@ export interface Presentation {
 }
 
 export interface AgentLogEntry {
+  id?: string;  // Optional ID for keying
   type: "tool_use" | "status" | "init" | "thinking";
   timestamp: Date;
+  content: string;  // User-friendly description
+  details?: string;  // Technical details for expanded view
   toolName?: string;
   toolInput?: Record<string, unknown>;
   message?: string;
@@ -41,7 +44,7 @@ export interface ToolCall {
 export type StreamEvent =
   | { type: "init"; message: string; session_id: string }
   | { type: "status"; message: string }
-  | { type: "tool_use"; tool_calls: ToolCall[]; friendly?: string[] }
+  | { type: "tool_use"; tool_calls: ToolCall[]; friendly?: string[]; details?: string[] }
   | { type: "assistant"; text: string }
   | {
       type: "complete";
@@ -73,4 +76,12 @@ export interface SessionState {
   agentSessionId: string | null;
   messages: ChatMessage[];
   presentation: Presentation | null;
+}
+
+export interface TemplateResult {
+  filename: string;
+  text: string;
+  screenshots: Array<{ index: number; data: string }>;
+  success: boolean;
+  error?: string;
 }

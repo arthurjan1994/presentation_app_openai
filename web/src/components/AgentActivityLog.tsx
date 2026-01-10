@@ -45,8 +45,12 @@ function InitIcon() {
 }
 
 function getEntryDescription(entry: AgentLogEntry): string {
+  // Use content field if available (new pattern)
+  if (entry.content) {
+    return entry.content;
+  }
+  // Fallback to old pattern
   if (entry.type === "tool_use" && entry.toolName) {
-    // Format tool name nicely
     const toolName = entry.toolName.replace(/_/g, " ");
     return toolName.charAt(0).toUpperCase() + toolName.slice(1);
   }
@@ -106,9 +110,11 @@ export function AgentActivityLog({
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           {/* Step count */}
-          <span className="text-xs text-gray-500">{log.length} steps</span>
+          <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">
+            {log.length} steps
+          </span>
 
           {/* Expand/collapse chevron */}
           <svg
@@ -124,7 +130,7 @@ export function AgentActivityLog({
 
       {/* Expanded log entries */}
       {isExpanded && (
-        <div className="border-t border-gray-200 max-h-64 overflow-y-auto">
+        <div className="border-t border-gray-200 max-h-96 overflow-y-auto">
           {log.map((entry, idx) => (
             <div
               key={idx}
@@ -146,14 +152,10 @@ export function AgentActivityLog({
                   </span>
                 </div>
 
-                {/* Tool input preview or thinking snippet */}
-                {entry.type === "tool_use" && entry.toolInput && (
-                  <div className="text-xs text-gray-500 mt-0.5 truncate">
-                    {Object.entries(entry.toolInput).slice(0, 2).map(([key, value]) => (
-                      <span key={key} className="mr-2">
-                        {key}: {typeof value === "string" ? value.slice(0, 30) : JSON.stringify(value).slice(0, 30)}...
-                      </span>
-                    ))}
+                {/* Details - show full slide content */}
+                {entry.details && (
+                  <div className="text-xs text-gray-600 mt-1.5 whitespace-pre-wrap bg-gray-100 rounded p-2 max-h-32 overflow-y-auto">
+                    {entry.details}
                   </div>
                 )}
                 {entry.type === "thinking" && entry.thinkingSnippet && (
