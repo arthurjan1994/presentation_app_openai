@@ -9,6 +9,7 @@ interface ContextFilesUploadProps {
   onFilesProcessed: (results: ParseResult[]) => void;
   parseMode?: "cost_effective" | "premium";
   onParseModeChange?: (mode: "cost_effective" | "premium") => void;
+  apiKey?: string;
 }
 
 export function ContextFilesUpload({
@@ -16,6 +17,7 @@ export function ContextFilesUpload({
   onFilesProcessed,
   parseMode = "cost_effective",
   onParseModeChange,
+  apiKey,
 }: ContextFilesUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -36,7 +38,7 @@ export function ContextFilesUpload({
     try {
       const results: ParseResult[] = [];
 
-      for await (const event of streamParseFiles(fileArray, userSessionId, parseMode)) {
+      for await (const event of streamParseFiles(fileArray, userSessionId, parseMode, apiKey)) {
         if (event.type === "progress") {
           setProgress({
             current: event.current || 0,

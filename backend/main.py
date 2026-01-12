@@ -91,6 +91,63 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
 
+@app.post("/validate-api-key")
+async def validate_api_key(api_key: str = Form(...)):
+    """
+    Validate a LlamaCloud API key by making a test request.
+    """
+    if not api_key or not api_key.strip():
+        raise HTTPException(status_code=400, detail="API key is required")
+
+    api_key = api_key.strip()
+
+    # Validate key format (LlamaCloud keys start with "llx-")
+    if not api_key.startswith("llx-"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid API key format. LlamaCloud API keys start with 'llx-'"
+        )
+
+    # Test the key by making a request to LlamaCloud API
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.cloud.llamaindex.ai/api/v1/projects",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=10.0,
+            )
+
+            if response.status_code == 401:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid API key. Please check your key and try again."
+                )
+            elif response.status_code == 403:
+                raise HTTPException(
+                    status_code=403,
+                    detail="API key does not have permission to access LlamaCloud."
+                )
+            elif response.status_code >= 400:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"LlamaCloud API error: {response.status_code}"
+                )
+
+            return {"valid": True, "message": "API key is valid"}
+
+    except httpx.TimeoutException:
+        raise HTTPException(
+            status_code=504,
+            detail="Timeout while validating API key. Please try again."
+        )
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to connect to LlamaCloud: {str(e)}"
+        )
+
+
 @app.post("/agent-stream")
 async def agent_stream(
     instructions: str = Form(...),
@@ -354,6 +411,7 @@ async def parse_files_endpoint(
     files: list[UploadFile] = File(...),
     user_session_id: str = Form(...),
     parse_mode: str = Form("cost_effective"),
+    api_key: Optional[str] = Form(None),
 ):
     """
     Parse uploaded files for context using LlamaParse.
@@ -364,6 +422,10 @@ async def parse_files_endpoint(
     - error: Error messages
     """
     from parser import parse_files_stream
+
+    # If api_key provided, temporarily set it as env var for LlamaParse
+    if api_key:
+        os.environ["LLAMA_CLOUD_API_KEY"] = api_key
 
     async def event_stream():
         try:
@@ -396,6 +458,7 @@ async def parse_files_endpoint(
 async def parse_template_endpoint(
     file: UploadFile = File(...),
     user_session_id: str = Form(...),
+    api_key: Optional[str] = Form(None),
 ):
     """
     Parse a presentation template file with screenshot extraction.
@@ -403,6 +466,10 @@ async def parse_template_endpoint(
     """
     from parser import parse_template_with_screenshots
     from session import session_manager
+
+    # If api_key provided, temporarily set it as env var for LlamaParse
+    if api_key:
+        os.environ["LLAMA_CLOUD_API_KEY"] = api_key
 
     content = await file.read()
     result = await parse_template_with_screenshots(content, file.filename)

@@ -9,6 +9,7 @@ import { ExportMenu } from "@/components/ExportMenu";
 import { ContextFilesUpload } from "@/components/ContextFilesUpload";
 import { TemplateUpload } from "@/components/TemplateUpload";
 import { TemplatePreview } from "@/components/TemplatePreview";
+import ApiKeyGate, { clearStoredApiKey } from "@/components/ApiKeyGate";
 import { getSessionSlides } from "@/lib/api";
 import {
   generateSessionId,
@@ -40,6 +41,9 @@ export default function Home() {
 
   // UI state
   const [isLoading, setIsLoading] = useState(true);
+
+  // API key state
+  const [llamaApiKey, setLlamaApiKey] = useState<string | null>(null);
 
   // Initialize session on mount
   useEffect(() => {
@@ -182,26 +186,39 @@ export default function Home() {
   }
 
   return (
-    <div className="h-screen flex flex-col">
-      {/* Header */}
-      <header className="bg-white border-b px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <h1 className="text-xl font-semibold text-gray-900">
-            AI Presentation Generator
-          </h1>
-          <button
-            onClick={handleNewSession}
-            className="text-sm text-blue-600 hover:text-blue-800"
-          >
-            + New Presentation
-          </button>
-        </div>
-        <ExportMenu
-          sessionId={userSessionId}
-          presentationTitle={presentation?.title || "presentation"}
-          disabled={slides.length === 0}
-        />
-      </header>
+    <ApiKeyGate onApiKeyValidated={setLlamaApiKey}>
+      <div className="h-screen flex flex-col">
+        {/* Header */}
+        <header className="bg-white border-b px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <h1 className="text-xl font-semibold text-gray-900">
+              AI Presentation Generator
+            </h1>
+            <button
+              onClick={handleNewSession}
+              className="text-sm text-blue-600 hover:text-blue-800"
+            >
+              + New Presentation
+            </button>
+          </div>
+          <div className="flex items-center gap-4">
+            <ExportMenu
+              sessionId={userSessionId}
+              presentationTitle={presentation?.title || "presentation"}
+              disabled={slides.length === 0}
+            />
+            <button
+              onClick={() => {
+                clearStoredApiKey();
+                setLlamaApiKey(null);
+                window.location.reload();
+              }}
+              className="text-sm text-gray-500 hover:text-gray-700"
+            >
+              Sign Out
+            </button>
+          </div>
+        </header>
 
       {/* Main content */}
       <main className="flex-1 flex overflow-hidden">
@@ -270,6 +287,7 @@ export default function Home() {
                 onFilesProcessed={handleFilesProcessed}
                 parseMode={parseMode}
                 onParseModeChange={setParseMode}
+                apiKey={llamaApiKey || undefined}
               />
             )}
 
@@ -285,6 +303,7 @@ export default function Home() {
                   <TemplateUpload
                     userSessionId={userSessionId}
                     onTemplateProcessed={handleTemplateProcessed}
+                    apiKey={llamaApiKey || undefined}
                   />
                 )
               )}
@@ -306,6 +325,7 @@ export default function Home() {
           </div>
         </div>
       </main>
-    </div>
+      </div>
+    </ApiKeyGate>
   );
 }
