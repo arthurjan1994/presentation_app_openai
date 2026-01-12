@@ -1,18 +1,19 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { parseTemplate } from "@/lib/api";
 import type { TemplateResult } from "@/types";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 interface TemplateUploadProps {
   userSessionId: string;
   onTemplateProcessed: (result: TemplateResult) => void;
+  apiKey?: string;
 }
 
 export function TemplateUpload({
   userSessionId,
   onTemplateProcessed,
+  apiKey,
 }: TemplateUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -23,34 +24,21 @@ export function TemplateUpload({
       setIsProcessing(true);
       setError(null);
 
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("user_session_id", userSessionId);
-
       try {
-        const response = await fetch(`${API_BASE}/parse-template`, {
-          method: "POST",
-          body: formData,
-        });
-
-        if (!response.ok) {
-          throw new Error(`Failed to parse template: ${response.status}`);
-        }
-
-        const result: TemplateResult = await response.json();
+        const result = await parseTemplate(file, userSessionId, apiKey);
 
         if (!result.success) {
           throw new Error(result.error || "Template parsing failed");
         }
 
-        onTemplateProcessed(result);
+        onTemplateProcessed(result as TemplateResult);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unknown error");
       } finally {
         setIsProcessing(false);
       }
     },
-    [userSessionId, onTemplateProcessed]
+    [userSessionId, onTemplateProcessed, apiKey]
   );
 
   const handleDrop = useCallback(

@@ -7,6 +7,26 @@ import type { StreamEvent, Slide, ParseProgress } from "@/types";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 /**
+ * Validate a LlamaCloud API key against the backend.
+ */
+export async function validateApiKey(apiKey: string): Promise<{ valid: boolean; message: string }> {
+  const formData = new FormData();
+  formData.append('api_key', apiKey);
+
+  const response = await fetch(`${API_BASE}/validate-api-key`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Failed to validate API key' }));
+    throw new Error(error.detail || 'Failed to validate API key');
+  }
+
+  return response.json();
+}
+
+/**
  * Stream agent interaction for presentation creation/editing.
  */
 export async function* streamAgent(options: {
@@ -139,7 +159,8 @@ export async function exportPdf(sessionId: string): Promise<Blob> {
 export async function* streamParseFiles(
   files: File[],
   userSessionId: string,
-  parseMode: string = "cost_effective"
+  parseMode: string = "cost_effective",
+  apiKey?: string
 ): AsyncGenerator<ParseProgress> {
   const formData = new FormData();
   for (const file of files) {
@@ -147,6 +168,9 @@ export async function* streamParseFiles(
   }
   formData.append("user_session_id", userSessionId);
   formData.append("parse_mode", parseMode);
+  if (apiKey) {
+    formData.append("api_key", apiKey);
+  }
 
   const response = await fetch(`${API_BASE}/parse-files`, {
     method: "POST",
@@ -184,6 +208,34 @@ export async function* streamParseFiles(
       }
     }
   }
+}
+
+/**
+ * Parse a presentation template file.
+ */
+export async function parseTemplate(
+  file: File,
+  userSessionId: string,
+  apiKey?: string
+): Promise<{ filename: string; text: string; screenshots: Array<{ index: number; data: string }>; success: boolean; error?: string }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("user_session_id", userSessionId);
+  if (apiKey) {
+    formData.append("api_key", apiKey);
+  }
+
+  const response = await fetch(`${API_BASE}/parse-template`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Failed to parse template" }));
+    throw new Error(error.detail || "Failed to parse template");
+  }
+
+  return response.json();
 }
 
 /**
