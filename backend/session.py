@@ -39,7 +39,7 @@ class PresentationSession:
         self.context_files: list[dict] = []
         self.style_template: Optional[dict] = None  # {filename, text, screenshots}
         self.is_continuation: bool = False
-        self.claude_session_id: Optional[str] = None
+        self.agent_session_id: Optional[str] = None
         self.created_at: datetime = datetime.now()
         self.updated_at: datetime = datetime.now()
 
@@ -68,7 +68,7 @@ class PresentationSession:
             "context_files": self.context_files,
             "style_template": self.style_template,
             "is_continuation": self.is_continuation,
-            "claude_session_id": self.claude_session_id,
+            "agent_session_id": self.agent_session_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat()
         }
@@ -86,7 +86,8 @@ class PresentationSession:
         session.context_files = data.get("context_files", [])
         session.style_template = data.get("style_template")
         session.is_continuation = data.get("is_continuation", False)
-        session.claude_session_id = data.get("claude_session_id")
+        # Support both old and new field names during migration
+        session.agent_session_id = data.get("agent_session_id") or data.get("claude_session_id")
         session.created_at = datetime.fromisoformat(data["created_at"])
         session.updated_at = datetime.fromisoformat(data["updated_at"])
         return session
@@ -108,9 +109,18 @@ class SessionManager:
                     session_id TEXT PRIMARY KEY,
                     created_at TIMESTAMP,
                     updated_at TIMESTAMP,
-                    claude_session_id TEXT
+                    agent_session_id TEXT
                 )
             """)
+            # Migration logic could go here, but for now we just create the table if it doesn't exist
+            # If the table exists with the old column, we might have issues if we try to insert into it using the new name
+            # Assuming we can just ignore the old column for now or this is a fresh start
+            try:
+                # Try to add the new column if it doesn't exist
+                conn.execute("ALTER TABLE sessions ADD COLUMN agent_session_id TEXT")
+            except sqlite3.OperationalError:
+                # Column likely already exists
+                pass
             conn.commit()
 
     def get_or_create_session(
@@ -180,15 +190,18 @@ class SessionManager:
     def _save_to_db(self, session: PresentationSession):
         """Save session metadata to SQLite."""
         with sqlite3.connect(DB_PATH) as conn:
+            # We use agent_session_id now.
+            # Note: if the table has claude_session_id, this insert might fail if we don't handle the schema migration perfectly
+            # but we added the column in _init_db
             conn.execute("""
                 INSERT OR REPLACE INTO sessions
-                (session_id, created_at, updated_at, claude_session_id)
+                (session_id, created_at, updated_at, agent_session_id)
                 VALUES (?, ?, ?, ?)
             """, (
                 session.session_id,
                 session.created_at.isoformat(),
                 session.updated_at.isoformat(),
-                session.claude_session_id
+                session.agent_session_id
             ))
             conn.commit()
 

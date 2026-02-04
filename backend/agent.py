@@ -1,13 +1,15 @@
 """
-Claude Agent SDK integration for presentation manipulation.
+OpenAI Agent integration for presentation manipulation.
 
 Defines tools for creating and editing presentations,
-and provides the main agent streaming function.
+and provides the main agent streaming function using OpenAI SDK.
 """
 
 import uuid
 import logging
-from typing import Any, AsyncGenerator, Optional
+import json
+import asyncio
+from typing import Any, AsyncGenerator, Optional, List, Dict
 from contextvars import ContextVar
 
 from models import Presentation, Slide, SlideLayout, PendingEdit
@@ -32,56 +34,65 @@ def set_current_session(session: Optional[PresentationSession]):
     _current_session.set(session)
 
 
-# Try to import Claude Agent SDK
-try:
-    from claude_agent_sdk import (
-        ClaudeSDKClient,
-        ClaudeAgentOptions,
-        tool,
-        create_sdk_mcp_server,
-        AssistantMessage,
-        UserMessage,
-        SystemMessage,
-        ResultMessage,
-        TextBlock,
-        ToolUseBlock,
-        ToolResultBlock,
-    )
-    AGENT_SDK_AVAILABLE = True
-    AGENT_SDK_ERROR = None
-    print("[Agent] Claude Agent SDK loaded successfully")
-except ImportError as e:
-    AGENT_SDK_AVAILABLE = False
-    AGENT_SDK_ERROR = f"{e}. Install with: pip install claude-agent-sdk"
-    ClaudeSDKClient = None
-    ClaudeAgentOptions = None
-    tool = None
-    create_sdk_mcp_server = None
-    AssistantMessage = None
-    UserMessage = None
-    SystemMessage = None
-    ResultMessage = None
-    TextBlock = None
-    ToolUseBlock = None
-    ToolResultBlock = None
-    print(f"[Agent] WARNING: Claude Agent SDK not available: {e}")
+# Global registries for tools
+OPENAI_TOOLS: List[Dict[str, Any]] = []
+TOOL_FUNCTIONS: Dict[str, Any] = {}
 
-# Fallback tool decorator when SDK not available
-if not AGENT_SDK_AVAILABLE:
-    def tool(name: str, description: str, params: dict):
-        def decorator(func):
-            func._tool_name = name
-            func._tool_description = description
-            func._tool_params = params
-            return func
-        return decorator
+
+def python_type_to_json_type(py_type: Any) -> str:
+    """Convert Python type to JSON schema type."""
+    if py_type is str:
+        return "string"
+    if py_type is int:
+        return "integer"
+    if py_type is float:
+        return "number"
+    if py_type is bool:
+        return "boolean"
+    if py_type is dict:
+        return "object"
+    if py_type is list:
+        return "array"
+    return "string"
+
+
+def tool(name: str, description: str, params: Dict[str, Any]):
+    """Decorator to register a function as an OpenAI tool."""
+    def decorator(func):
+        TOOL_FUNCTIONS[name] = func
+
+        properties = {}
+        required = []
+
+        for param_name, param_type in params.items():
+            properties[param_name] = {"type": python_type_to_json_type(param_type)}
+            # We make all parameters required to ensure the model provides them
+            # This simplifies things. The model is usually smart enough to provide defaults if we explained them in description,
+            # but for structured output, explicit is better.
+            required.append(param_name)
+
+        tool_def = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required
+                }
+            }
+        }
+        OPENAI_TOOLS.append(tool_def)
+        return func
+    return decorator
 
 
 # =============================================================================
 # TOOL DEFINITIONS
 # =============================================================================
 
-@tool("create_presentation", "Create a new presentation", {"title": str})
+@tool("create_presentation", "Create a new presentation. Title is required.", {"title": str})
 async def tool_create_presentation(args: dict[str, Any]) -> dict[str, Any]:
     """Create a new presentation with the given title."""
     session = get_current_session()
@@ -96,10 +107,10 @@ async def tool_create_presentation(args: dict[str, Any]) -> dict[str, Any]:
     return {"success": True, "title": title, "slide_count": 0}
 
 
-@tool("add_slide", "Add a new slide with HTML content", {
+@tool("add_slide", "Add a new slide with HTML content. Position and layout are optional (use -1 for position if unknown, 'blank' for layout).", {
     "html": str,
-    "position": int,  # Optional - defaults to end
-    "layout": str  # Optional - defaults to "blank"
+    "position": int,
+    "layout": str
 })
 async def tool_add_slide(args: dict[str, Any]) -> dict[str, Any]:
     """Add a new slide to the presentation."""
@@ -113,13 +124,16 @@ async def tool_add_slide(args: dict[str, Any]) -> dict[str, Any]:
     position = args.get("position")
     layout_str = args.get("layout", "blank")
 
+    # Handle -1 or None as "append"
+    if position == -1:
+        position = None
+
     try:
         layout = SlideLayout(layout_str)
     except ValueError:
         layout = SlideLayout.BLANK
 
     # Count pending ADD edits to calculate correct index
-    # This ensures slides added in quick succession get correct sequential indices
     pending_add_count = sum(1 for e in session.pending_edits if e.operation == "ADD")
     current_slide_count = len(session.presentation.slides)
 
@@ -231,7 +245,7 @@ async def tool_reorder_slides(args: dict[str, Any]) -> dict[str, Any]:
     return {"success": True, "from_index": from_index, "to_index": to_index}
 
 
-@tool("list_slides", "List all slides in the presentation", {})
+@tool("list_slides", "List all slides in the presentation. No parameters required.", {"dummy": str})
 async def tool_list_slides(args: dict[str, Any]) -> dict[str, Any]:
     """List all slides with their index and content preview."""
     session = get_current_session()
@@ -296,7 +310,7 @@ async def tool_set_theme(args: dict[str, Any]) -> dict[str, Any]:
     return {"success": True, "theme": theme}
 
 
-@tool("get_pending_edits", "Get all pending edits that haven't been committed", {})
+@tool("get_pending_edits", "Get all pending edits that haven't been committed. No parameters required.", {"dummy": str})
 async def tool_get_pending_edits(args: dict[str, Any]) -> dict[str, Any]:
     """Get all pending edits."""
     session = get_current_session()
@@ -316,7 +330,7 @@ async def tool_get_pending_edits(args: dict[str, Any]) -> dict[str, Any]:
     return {"edits": edits, "count": len(edits)}
 
 
-@tool("commit_edits", "Apply all pending edits to the presentation", {})
+@tool("commit_edits", "Apply all pending edits to the presentation. No parameters required.", {"dummy": str})
 async def tool_commit_edits(args: dict[str, Any]) -> dict[str, Any]:
     """Apply all pending edits."""
     session = get_current_session()
@@ -385,27 +399,6 @@ async def tool_commit_edits(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # =============================================================================
-# TOOL REGISTRATION
-# =============================================================================
-
-PRESENTATION_TOOLS = [
-    tool_create_presentation,
-    tool_add_slide,
-    tool_update_slide,
-    tool_delete_slide,
-    tool_reorder_slides,
-    tool_list_slides,
-    tool_get_slide,
-    tool_set_theme,
-    tool_get_pending_edits,
-    tool_commit_edits,
-]
-
-# Tool name to function mapping for fallback mode
-TOOL_MAP = {func._tool_name: func for func in PRESENTATION_TOOLS if hasattr(func, '_tool_name')}
-
-
-# =============================================================================
 # SYSTEM PROMPTS
 # =============================================================================
 
@@ -464,7 +457,7 @@ Use list_slides first to understand the current state before making any changes.
 
 
 # =============================================================================
-# MESSAGE SERIALIZATION
+# HELPER FUNCTIONS
 # =============================================================================
 
 def _extract_slide_title_from_html(html: str) -> str:
@@ -473,23 +466,17 @@ def _extract_slide_title_from_html(html: str) -> str:
     if not html:
         return None
 
-    # Try to find h1, h2, or first significant text
-    # Pattern for h1 or h2 tags
     heading_match = re.search(r'<h[12][^>]*>([^<]+)</h[12]>', html, re.IGNORECASE)
     if heading_match:
         title = heading_match.group(1).strip()
-        # Clean up any extra whitespace
         title = ' '.join(title.split())
         if len(title) > 60:
             title = title[:57] + "..."
         return title
 
-    # Fallback: try to get first meaningful text content
-    # Remove all HTML tags and get first line
     text = re.sub(r'<[^>]+>', ' ', html)
     text = ' '.join(text.split()).strip()
     if text:
-        # Get first sentence or first 60 chars
         first_part = text[:60]
         if len(text) > 60:
             first_part = first_part.rsplit(' ', 1)[0] + "..."
@@ -504,62 +491,30 @@ def _extract_slide_content_from_html(html: str) -> str:
     if not html:
         return None
 
-    # Extract list items (handle nested content too)
     list_items = re.findall(r'<li[^>]*>(.*?)</li>', html, re.IGNORECASE | re.DOTALL)
-
-    # Extract paragraphs
     paragraphs = re.findall(r'<p[^>]*>(.*?)</p>', html, re.IGNORECASE | re.DOTALL)
-
-    # Extract div content that might contain text (for structured content)
-    divs_with_text = re.findall(r'<div[^>]*>([^<]+)</div>', html, re.IGNORECASE)
-
-    # Build content string
     content_parts = []
 
-    # Add bullet points - clean up any nested HTML
     for item in list_items:
-        # Remove any nested HTML tags
         item = re.sub(r'<[^>]+>', ' ', item)
         item = ' '.join(item.split()).strip()
         if item:
             content_parts.append(f"• {item}")
 
-    # Add paragraphs if no list items (or in addition)
     if not content_parts:
         for para in paragraphs:
-            # Remove any nested HTML tags
             para = re.sub(r'<[^>]+>', ' ', para)
             para = ' '.join(para.split()).strip()
             if para:
                 content_parts.append(para)
 
-    # If still nothing, try to extract structured text intelligently
     if not content_parts:
-        # First, try to find strong/b tags as headers with following text
-        # Pattern: <strong>Title:</strong> description
-        structured = re.findall(r'<(?:strong|b)[^>]*>([^<]+)</(?:strong|b)>\s*:?\s*([^<]*)', html, re.IGNORECASE)
-        if structured:
-            for title, desc in structured:
-                title = title.strip().rstrip(':')
-                desc = desc.strip()
-                if title and desc:
-                    content_parts.append(f"• {title}: {desc}")
-                elif title:
-                    content_parts.append(f"• {title}")
-
-    # Last resort: extract all text and try to format it
-    if not content_parts:
-        # Remove script and style tags first
         text = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
-        # Remove h1/h2 (title) to avoid duplication
         text = re.sub(r'<h[12][^>]*>.*?</h[12]>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        # Replace block elements with newlines
         text = re.sub(r'</(?:div|p|li|br)[^>]*>', '\n', text, flags=re.IGNORECASE)
         text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
-        # Remove remaining HTML tags
         text = re.sub(r'<[^>]+>', ' ', text)
-        # Clean up whitespace but preserve newlines
         lines = [' '.join(line.split()).strip() for line in text.split('\n')]
         lines = [line for line in lines if line]
         if lines:
@@ -567,7 +522,6 @@ def _extract_slide_content_from_html(html: str) -> str:
 
     if content_parts:
         result = '\n'.join(content_parts)
-        # Limit length but keep it readable
         if len(result) > 500:
             result = result[:497] + "..."
         return result
@@ -576,11 +530,7 @@ def _extract_slide_content_from_html(html: str) -> str:
 
 
 def _get_friendly_tool_description(tool_name: str, tool_input: dict) -> tuple[str, str]:
-    """Convert a tool call into a user-friendly description and details.
-
-    Returns:
-        Tuple of (friendly_description, details_content)
-    """
+    """Convert a tool call into a user-friendly description and details."""
     if not isinstance(tool_input, dict):
         return None, None
 
@@ -616,196 +566,6 @@ def _get_friendly_tool_description(tool_name: str, tool_input: dict) -> tuple[st
     return None, None
 
 
-def _serialize_message(message) -> dict:
-    """Convert an agent message to a JSON-serializable dict."""
-    msg_dict = {"type": "unknown"}
-
-    if AssistantMessage and isinstance(message, AssistantMessage):
-        msg_dict["type"] = "assistant"
-        texts = []
-        tool_calls = []
-
-        for block in message.content:
-            if TextBlock and isinstance(block, TextBlock):
-                texts.append(block.text)
-            elif ToolUseBlock and isinstance(block, ToolUseBlock):
-                tool_name = getattr(block, "name", "unknown")
-                tool_input = getattr(block, "input", {})
-                friendly_desc, details = _get_friendly_tool_description(tool_name, tool_input)
-
-                tool_calls.append({
-                    "name": tool_name,
-                    "input": tool_input if isinstance(tool_input, dict) else str(tool_input)[:200],
-                    "friendly": friendly_desc,
-                    "details": details,
-                })
-
-        if texts:
-            msg_dict["text"] = " ".join(texts)
-        if tool_calls:
-            msg_dict["tool_calls"] = tool_calls
-            msg_dict["type"] = "tool_use"
-            friendly_msgs = [tc["friendly"] for tc in tool_calls if tc.get("friendly")]
-            if friendly_msgs:
-                msg_dict["friendly"] = friendly_msgs
-            # Include details for slide content
-            details_msgs = [tc["details"] for tc in tool_calls if tc.get("details")]
-            if details_msgs:
-                msg_dict["details"] = details_msgs
-
-    elif UserMessage and isinstance(message, UserMessage):
-        msg_dict["type"] = "user"
-        if hasattr(message, "content"):
-            msg_dict["content"] = str(message.content)[:500]
-
-    elif SystemMessage and isinstance(message, SystemMessage):
-        msg_dict["type"] = "system"
-        if hasattr(message, "content"):
-            msg_dict["content"] = str(message.content)[:500]
-
-    elif ResultMessage and isinstance(message, ResultMessage):
-        msg_dict["type"] = "result"
-        # Extract session_id from ResultMessage
-        if hasattr(message, "session_id"):
-            msg_dict["session_id"] = message.session_id
-
-    return msg_dict
-
-
-# =============================================================================
-# AGENT OPTIONS
-# =============================================================================
-
-def _create_agent_options(
-    session: PresentationSession,
-    is_continuation: bool = False,
-    resume_session_id: Optional[str] = None,
-) -> "ClaudeAgentOptions":
-    """Create agent options with presentation tools."""
-    session.is_continuation = is_continuation
-
-    # Create in-process MCP server with our tools
-    pres_server = create_sdk_mcp_server(
-        name="presentation",
-        version="1.0.0",
-        tools=PRESENTATION_TOOLS
-    )
-
-    # Use different system prompt for continuations
-    system_prompt = SYSTEM_PROMPT_CONTINUATION if is_continuation else SYSTEM_PROMPT_NEW
-
-    # Add context files to prompt if available
-    if session.context_files:
-        context_text = "\n\n".join([
-            f"=== {f['filename']} ===\n{f['text']}"
-            for f in session.context_files if f.get('text')
-        ])
-        if context_text:
-            system_prompt += f"\n\nCONTEXT FILES:\n{context_text}"
-
-    # Add style template to prompt if available
-    if session.style_template and session.style_template.get("text"):
-        system_prompt += f"\n\nSTYLE TEMPLATE REFERENCE:"
-        system_prompt += f"\nFilename: {session.style_template['filename']}"
-        system_prompt += f"\nTemplate content:\n{session.style_template['text']}"
-
-        screenshot_count = len(session.style_template.get("screenshots", []))
-        if screenshot_count > 0:
-            system_prompt += f"\n\nStyle reference screenshots will be provided as images in the user message. "
-            system_prompt += "Carefully analyze these screenshots and replicate the visual style (colors, fonts, layout patterns, design elements) in the slides you create."
-
-    return ClaudeAgentOptions(
-        system_prompt=system_prompt,
-        mcp_servers={"presentation": pres_server},
-        allowed_tools=[
-            "mcp__presentation__create_presentation",
-            "mcp__presentation__add_slide",
-            "mcp__presentation__update_slide",
-            "mcp__presentation__delete_slide",
-            "mcp__presentation__reorder_slides",
-            "mcp__presentation__list_slides",
-            "mcp__presentation__get_slide",
-            "mcp__presentation__set_theme",
-            "mcp__presentation__get_pending_edits",
-            "mcp__presentation__commit_edits",
-        ],
-        resume=resume_session_id,
-    )
-
-
-# =============================================================================
-# MULTIMODAL PROMPT BUILDER
-# =============================================================================
-
-def _build_multimodal_content(
-    session: PresentationSession,
-    instructions: str
-) -> list[dict]:
-    """
-    Build multimodal content blocks with template screenshots if available.
-
-    Returns a list of content blocks in Anthropic's vision API format.
-    """
-    content_blocks = []
-
-    # Add template screenshots as vision context
-    if session.style_template and session.style_template.get("screenshots"):
-        screenshots = session.style_template["screenshots"]
-
-        content_blocks.append({
-            "type": "text",
-            "text": f"STYLE TEMPLATE REFERENCE SCREENSHOTS:\nThe following {len(screenshots)} screenshots show the visual style you should emulate when creating slides:"
-        })
-
-        for i, screenshot in enumerate(screenshots):
-            content_blocks.append({
-                "type": "text",
-                "text": f"\nSlide {screenshot.get('index', i) + 1}:"
-            })
-            content_blocks.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": screenshot["data"],
-                }
-            })
-
-        content_blocks.append({
-            "type": "text",
-            "text": "\nIMPORTANT: Match this template's visual style - colors, fonts, layout patterns, and design elements.\n\n---\n\nUSER REQUEST:"
-        })
-
-    # Add user instructions
-    content_blocks.append({"type": "text", "text": instructions})
-
-    return content_blocks
-
-
-async def _build_multimodal_prompt(
-    session: PresentationSession,
-    instructions: str
-) -> AsyncGenerator[dict, None]:
-    """
-    Build multimodal prompt as a user message with content blocks.
-
-    Matches the SDK's internal format from ClaudeSDKClient.query():
-    https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/client.py
-    """
-    content_blocks = _build_multimodal_content(session, instructions)
-
-    # SDK format: type + message wrapper + Anthropic API content
-    yield {
-        "type": "user",
-        "message": {
-            "role": "user",
-            "content": content_blocks
-        },
-        "parent_tool_use_id": None,
-        # session_id will be added by query() if not present
-    }
-
-
 # =============================================================================
 # AGENT STREAMING
 # =============================================================================
@@ -816,26 +576,32 @@ async def run_agent_stream(
     resume_session_id: Optional[str] = None,
     user_session_id: Optional[str] = None,
     context_files: Optional[list[dict]] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = "gpt-3.5-turbo",
 ) -> AsyncGenerator[dict, None]:
     """
-    Run the agent and stream results.
+    Run the agent and stream results using OpenAI SDK.
 
     Args:
         instructions: User instructions
         is_continuation: Whether this is continuing a previous session
-        resume_session_id: Claude session ID to resume (for multi-turn)
+        resume_session_id: Session ID (for multi-turn)
         user_session_id: Backend session ID
         context_files: Parsed context files
-
-    Yields:
-        SSE event dictionaries
+        api_key: OpenAI API key
+        base_url: OpenAI Base URL
+        model: Model ID
     """
-    print(f"[Agent Stream] Starting with is_continuation={is_continuation}, "
-          f"resume_session_id={resume_session_id}, user_session_id={user_session_id}")
+    if not api_key:
+        yield {"type": "error", "error": "API key is required"}
+        return
 
-    if not AGENT_SDK_AVAILABLE:
-        print(f"[Agent Stream] SDK not available: {AGENT_SDK_ERROR}")
-        yield {"type": "error", "error": f"Claude Agent SDK not available: {AGENT_SDK_ERROR}"}
+    # Import OpenAI here to handle dependencies
+    try:
+        from openai import AsyncOpenAI
+    except ImportError:
+        yield {"type": "error", "error": "openai package not installed"}
         return
 
     # Get or create session
@@ -847,43 +613,196 @@ async def run_agent_stream(
     set_current_session(session)
 
     yield {"type": "init", "message": "Starting agent...", "session_id": session.session_id}
-    yield {"type": "status", "message": "Connecting to Claude Agent SDK..."}
-
-    options = _create_agent_options(session, is_continuation, resume_session_id)
-    message_count = 0
-    result_text = ""
-    agent_session_id = None  # Will be extracted from ResultMessage
+    yield {"type": "status", "message": "Connecting to OpenAI..."}
 
     try:
-        async with ClaudeSDKClient(options=options) as client:
-            print(f"[Agent Stream] Connected, sending query...")
-            yield {"type": "status", "message": "Agent connected, processing..."}
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
 
-            # Use multimodal prompt if style template has screenshots
-            await client.query(_build_multimodal_prompt(session, instructions))
+        client = AsyncOpenAI(**client_kwargs)
 
-            async for message in client.receive_response():
-                message_count += 1
-                msg_type = type(message).__name__
+        # Build System Prompt
+        system_prompt = SYSTEM_PROMPT_CONTINUATION if is_continuation else SYSTEM_PROMPT_NEW
 
-                # Log message
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            result_text = block.text
-                            preview = result_text[:200].replace('\n', ' ')
-                            print(f"[Agent Stream] #{message_count} {msg_type}: {preview}...")
-                        else:
-                            block_type = type(block).__name__
-                            print(f"[Agent Stream] #{message_count} {msg_type}/{block_type}")
-                elif ResultMessage and isinstance(message, ResultMessage):
-                    # Extract session_id from ResultMessage for multi-turn support
-                    agent_session_id = getattr(message, 'session_id', None)
-                    print(f"[Agent Stream] #{message_count} {msg_type}: session_id={agent_session_id}")
+        if session.context_files:
+            context_text = "\n\n".join([
+                f"=== {f['filename']} ===\n{f['text']}"
+                for f in session.context_files if f.get('text')
+            ])
+            if context_text:
+                system_prompt += f"\n\nCONTEXT FILES:\n{context_text}"
+
+        if session.style_template and session.style_template.get("text"):
+            system_prompt += f"\n\nSTYLE TEMPLATE REFERENCE:"
+            system_prompt += f"\nFilename: {session.style_template['filename']}"
+            system_prompt += f"\nTemplate content:\n{session.style_template['text']}"
+
+            if session.style_template.get("screenshots"):
+                system_prompt += f"\n\nStyle reference screenshots will be provided in the user message."
+
+        # Initialize messages
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # Build User Message (Multimodal)
+        user_content = []
+
+        # Add template screenshots if available
+        if session.style_template and session.style_template.get("screenshots"):
+            screenshots = session.style_template["screenshots"]
+            user_content.append({
+                "type": "text",
+                "text": f"STYLE TEMPLATE REFERENCE SCREENSHOTS:\nThe following {len(screenshots)} screenshots show the visual style you should emulate:"
+            })
+
+            for i, screenshot in enumerate(screenshots):
+                user_content.append({
+                    "type": "text",
+                    "text": f"\nSlide {screenshot.get('index', i) + 1}:"
+                })
+                # OpenAI uses "image_url" with base64
+                user_content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{screenshot['data']}"
+                    }
+                })
+
+        user_content.append({"type": "text", "text": instructions})
+
+        messages.append({"role": "user", "content": user_content})
+
+        # Main Loop
+        message_count = 0
+        final_result_text = ""
+
+        while True:
+            print(f"[Agent Stream] Sending request to {model}...")
+            yield {"type": "status", "message": "Thinking..."}
+
+            response_stream = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=OPENAI_TOOLS,
+                tool_choice="auto",
+                stream=True
+            )
+
+            current_tool_calls = {} # index -> {id, name, args_parts}
+            current_content = ""
+
+            async for chunk in response_stream:
+                delta = chunk.choices[0].delta
+
+                # Handle text content
+                if delta.content:
+                    current_content += delta.content
+                    final_result_text += delta.content
+                    yield {
+                        "type": "assistant",
+                        "text": delta.content
+                    }
+
+                # Handle tool calls
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in current_tool_calls:
+                            current_tool_calls[idx] = {
+                                "id": tc.id,
+                                "name": tc.function.name,
+                                "arguments": ""
+                            }
+
+                        if tc.id:
+                            current_tool_calls[idx]["id"] = tc.id
+                        if tc.function.name:
+                            current_tool_calls[idx]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            current_tool_calls[idx]["arguments"] += tc.function.arguments
+
+            # End of stream for this turn
+            message_count += 1
+
+            # Append assistant message to history
+            assistant_msg = {
+                "role": "assistant",
+                "content": current_content
+            }
+
+            if current_tool_calls:
+                assistant_msg["tool_calls"] = []
+                for idx in sorted(current_tool_calls.keys()):
+                    tc_data = current_tool_calls[idx]
+                    assistant_msg["tool_calls"].append({
+                        "id": tc_data["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc_data["name"],
+                            "arguments": tc_data["arguments"]
+                        }
+                    })
+
+            messages.append(assistant_msg)
+
+            # If no tool calls, we are done
+            if not current_tool_calls:
+                break
+
+            # Execute tools
+            yield {"type": "status", "message": "Executing tools..."}
+
+            tool_outputs_for_log = []
+
+            for idx in sorted(current_tool_calls.keys()):
+                tc_data = current_tool_calls[idx]
+                tool_name = tc_data["name"]
+                tool_id = tc_data["id"]
+                tool_args_str = tc_data["arguments"]
+
+                try:
+                    tool_args = json.loads(tool_args_str)
+                except json.JSONDecodeError:
+                    tool_args = {}
+                    print(f"Failed to parse tool arguments: {tool_args_str}")
+
+                # Notify frontend of tool use
+                friendly, details = _get_friendly_tool_description(tool_name, tool_args)
+
+                yield {
+                    "type": "tool_use",
+                    "tool_calls": [{
+                        "name": tool_name,
+                        "input": tool_args,
+                        "friendly": friendly,
+                        "details": details
+                    }]
+                }
+                if friendly:
+                    yield {"type": "tool_use", "friendly": [friendly]}
+                if details:
+                    yield {"type": "tool_use", "details": [details]}
+
+                # Execute tool
+                func = TOOL_FUNCTIONS.get(tool_name)
+                if func:
+                    try:
+                        result = await func(tool_args)
+                    except Exception as e:
+                        result = {"error": str(e)}
                 else:
-                    print(f"[Agent Stream] #{message_count} {msg_type}")
+                    result = {"error": f"Tool {tool_name} not found"}
 
-                yield _serialize_message(message)
+                tool_outputs_for_log.append(result)
+
+                # Append tool result to messages
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": json.dumps(result)
+                })
+
+            # Continue loop to let model react to tool outputs
 
     except Exception as e:
         print(f"[Agent Stream] Error: {e}")
@@ -896,16 +815,16 @@ async def run_agent_stream(
         set_current_session(None)
 
     # Save session state
-    session.claude_session_id = agent_session_id
+    # session.claude_session_id = ... # No persistent session ID needed for OpenAI REST API, we manage history in 'messages'
     session_manager.save_session(session)
 
     # Yield final summary
     yield {
         "type": "complete",
         "success": True,
-        "result": result_text,
+        "result": final_result_text,
         "message_count": message_count,
-        "session_id": agent_session_id,
+        "session_id": session.session_id, # Return our session ID
         "user_session_id": session.session_id,
         "slide_count": len(session.presentation.slides) if session.presentation else 0
     }
