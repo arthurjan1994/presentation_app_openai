@@ -157,48 +157,49 @@ async def validate_api_key(api_key: str = Form(...)):
         )
 
 
-@app.post("/validate-anthropic-key")
-async def validate_anthropic_key(request: dict):
+@app.post("/validate-openai-key")
+async def validate_openai_key(request: dict):
     """
-    Validate an Anthropic API key by making a test request.
+    Validate an OpenAI API key and Base URL by making a test request.
     """
     api_key = request.get("api_key")
+    base_url = request.get("base_url")
+    model = request.get("model", "gpt-3.5-turbo")
+
     if not api_key or not api_key.strip():
         raise HTTPException(status_code=400, detail="API key is required")
 
     api_key = api_key.strip()
 
-    # Validate key format (Anthropic keys start with "sk-ant-")
-    if not api_key.startswith("sk-ant-"):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid API key format. Anthropic API keys start with 'sk-ant-'"
-        )
-
     # Test the key by making a minimal API call
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
+        from openai import AsyncOpenAI
+
+        # Configure client
+        client_kwargs = {"api_key": api_key}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+
+        client = AsyncOpenAI(**client_kwargs)
+
         # Make a minimal API call to validate the key
-        client.messages.create(
-            model="claude-3-haiku-20240307",
+        # Using a simple prompt to check connectivity
+        await client.chat.completions.create(
+            model=model,
             max_tokens=1,
             messages=[{"role": "user", "content": "Hi"}]
         )
         return {"valid": True, "message": "API key is valid"}
-    except anthropic.AuthenticationError:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid API key. Please check your key and try again."
-        )
-    except anthropic.PermissionDeniedError:
-        raise HTTPException(
-            status_code=403,
-            detail="API key does not have permission to access Claude."
-        )
     except Exception as e:
+        logger.error(f"Validation error: {e}")
+        status_code = 500
+        if "401" in str(e) or "Authentication" in str(e):
+            status_code = 401
+        elif "403" in str(e):
+            status_code = 403
+
         raise HTTPException(
-            status_code=500,
+            status_code=status_code,
             detail=f"Failed to validate API key: {str(e)}"
         )
 
@@ -210,6 +211,9 @@ async def agent_stream(
     resume_session_id: Optional[str] = Form(None),
     user_session_id: Optional[str] = Form(None),
     context_files: Optional[str] = Form(None),
+    api_key: Optional[str] = Form(None),
+    base_url: Optional[str] = Form(None),
+    model: Optional[str] = Form(None),
 ):
     """
     Main streaming endpoint for agent interactions.
@@ -240,6 +244,9 @@ async def agent_stream(
                 resume_session_id=resume_session_id,
                 user_session_id=user_session_id,
                 context_files=parsed_context_files,
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
             ):
                 yield f"data: {json.dumps(message, default=str)}\n\n"
         except Exception as e:
